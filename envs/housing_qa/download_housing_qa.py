@@ -5,7 +5,12 @@ from io import TextIOWrapper
 import pandas as pd
 from datasets import Dataset
 from huggingface_hub import hf_hub_download
+from pathlib import Path
 
+ROOT_DIR = Path(__file__).resolve().parent
+DATA_DIR = ROOT_DIR / "data"
+if not DATA_DIR.exists():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 def load_housing_qa(name: str):
     files = {
@@ -36,5 +41,6 @@ def load_housing_qa(name: str):
 if __name__ == "__main__":
     for name in ["questions", "questions_aux", "statutes"]:
         dataset = load_housing_qa(name)
-        print(f"{name}: {len(dataset)} rows")
+    
+    dataset.save_to_disk(f"{DATA_DIR}/housing_qa")
     
