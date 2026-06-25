@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: cafl
+Version: 0.1.0
+Summary: A coding agent framework for law-related (CAFL) specialized tasks.
+Requires-Python: >=3.10
+Requires-Dist: mini-swe-agent
+Requires-Dist: datasets
+Requires-Dist: jinja2
+Requires-Dist: pandas
+Requires-Dist: huggingface_hub
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"

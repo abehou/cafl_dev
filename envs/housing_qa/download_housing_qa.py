@@ -41,6 +41,6 @@ def load_housing_qa(name: str):
 if __name__ == "__main__":
     for name in ["questions", "questions_aux", "statutes"]:
         dataset = load_housing_qa(name)
+        dataset.save_to_disk(f"{DATA_DIR}/housing_qa_{name}")
     
-    dataset.save_to_disk(f"{DATA_DIR}/housing_qa")
     

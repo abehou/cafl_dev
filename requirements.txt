@@ -1,0 +1,5 @@
+mini-swe-agent
+datasets
+pandas
+jinja2
+huggingface_hub

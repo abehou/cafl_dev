@@ -1,0 +1,24 @@
+[project]
+name = "cafl"
+version = "0.1.0"
+description = "A coding agent framework for law-related (CAFL) specialized tasks."
+requires-python = ">=3.10"
+dependencies = [
+    "mini-swe-agent",
+    "datasets",
+    "jinja2",
+    "pandas",
+    "huggingface_hub",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+include = ["cafl*"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"

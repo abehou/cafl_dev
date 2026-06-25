@@ -16,7 +16,7 @@ from cafl.utils.utils import list_gemini_models
 
 QUESTIONS = [
     "What is CAFL? Answer based on the local code",
-    "What does RunState in this repo store?",
+    "Tell me the requirements needed for this repo without seeing requirements.txt",
 ]
 
 

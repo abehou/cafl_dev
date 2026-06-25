@@ -68,10 +68,10 @@ DEFAULT_OBSERVATION_TEMPLATE = """{% if output.exception_info -%}
 {%- else -%}
 <warning>Tool output was truncated. Use narrower commands, file filters, or line ranges.</warning>
 <output_head>
-{{ output.output[:6000] -}}
+{{ output.output[:2000] -}}
 </output_head>
 <output_tail>
-{{ output.output[-6000:] -}}
+{{ output.output[-2000:] -}}
 </output_tail>
 {%- endif -%}
 """
