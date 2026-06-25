@@ -1,5 +1,4 @@
 import asyncio
-import io
 import json
 from types import SimpleNamespace
 
@@ -8,7 +7,7 @@ from minisweagent.environments.local import LocalEnvironment
 
 from cafl.backend import Cafl, MiniEvent, RunState
 from cafl.config import CaflConfig
-from cafl.logging import ConsoleEventLogger, DEFAULT_MAX_EVENT_CHARS
+from cafl.logging import EventLogger, DEFAULT_MAX_EVENT_CHARS
 
 
 class FakeModel:
@@ -113,6 +112,22 @@ class PlainAnswerModel(FakeModel):
         }
 
 
+class InvalidThenValidJsonModel(FakeModel):
+    def query(self, messages):
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "role": "assistant",
+                "content": "not json",
+                "extra": {"cost": 0.01},
+            }
+        return {
+            "role": "assistant",
+            "content": json.dumps({"answer": "True"}),
+            "extra": {"cost": 0.01},
+        }
+
+
 class FakeLiteLLMMessage:
     def __init__(self, content, tool_calls=None):
         self.content = content
@@ -173,6 +188,37 @@ def test_default_system_template_includes_tool_and_submission_protocol():
     assert "answer directly without a tool call" in system_message
     assert "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" in system_message
     assert "remaining output is the final" in system_message
+
+
+def test_output_schema_is_added_to_system_prompt():
+    agent = Cafl(
+        PlainAnswerModel(),
+        cafl_config=CaflConfig(output_schema={"answer": "a string"}, output_validation_retries=0),
+    )
+
+    system_message = agent.run("what is CAFL?", output_root=None).state.messages[0]["content"]
+
+    assert "## Output Schema" in system_message
+    assert '"answer": "a string"' in system_message
+
+
+def test_output_schema_invalid_answer_triggers_retry():
+    agent = Cafl(
+        InvalidThenValidJsonModel(),
+        cafl_config=CaflConfig(output_schema={"answer": "a string"}),
+    )
+
+    result = agent.run("answer with json", output_root=None)
+
+    assert result.answer == '{"answer": "True"}'
+    assert agent.model.calls == 2
+    assert [(event.role, event.status) for event in result.events] == [
+        ("assistant", "completed"),
+        ("user", "failed"),
+        ("assistant", "completed"),
+    ]
+    assert "did not match the required JSON output schema" in result.events[1].content
+    assert result.state.output_validation_failures == 1
 
 
 def test_named_model_can_answer_without_tool_call(monkeypatch):
@@ -260,9 +306,9 @@ def test_run_uses_injected_cafl_config(monkeypatch):
     ]
 
 
-def test_console_event_logger_truncates_output():
-    stream = io.StringIO()
-    logger = ConsoleEventLogger(stream=stream)
+def test_event_logger_writes_concise_file(tmp_path):
+    log_path = tmp_path / "events.log"
+    logger = EventLogger(log_path)
 
     logger(
         MiniEvent(
@@ -276,9 +322,10 @@ def test_console_event_logger_truncates_output():
         )
     )
 
-    printed = stream.getvalue()
-    assert "... <truncated 10 chars>" in printed
-    assert len(printed) < DEFAULT_MAX_EVENT_CHARS + 200
+    logged = log_path.read_text()
+    assert "... <truncated 10 chars>" in logged
+    assert "[item-000 #0 tool/completed]" in logged
+    assert len(logged) < DEFAULT_MAX_EVENT_CHARS + 200
 
 
 @pytest.mark.asyncio
@@ -383,6 +430,14 @@ def test_run_agentic_mode_returns_result_and_persists_trace(tmp_path):
     trace_records = [json.loads(line) for line in (result.output_dir / "trace.jsonl").read_text().splitlines()]
     assert [record["role"] for record in trace_records] == ["assistant", "tool_call", "tool", "exit"]
     assert [record["event_id"] for record in trace_records] == [0, 1, 2, 3]
+    tool_trace_records = [json.loads(line) for line in (result.output_dir / "tool_trace.jsonl").read_text().splitlines()]
+    assert tool_trace_records == [
+        {
+            "event_index": 1,
+            "tool": "bash",
+            "arguments": {"cmd": "echo hi"},
+        }
+    ]
 
 
 def test_same_agent_can_stream_independent_states():

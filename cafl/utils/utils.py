@@ -20,6 +20,12 @@ def append_jsonl(path: Path, record: dict) -> None:
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+def read_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+def read_jsonl(path: Path) -> list[dict]:
+    with path.open(encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
 
 def safe_slug(text: str, *, max_length: int = 64) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", text.lower()).strip("-")

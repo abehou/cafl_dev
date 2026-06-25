@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cafl import Cafl
-from cafl.logging import ConsoleEventLogger
+from cafl.logging import EventLogger
 from cafl.utils.utils import list_gemini_models
 
 
@@ -36,7 +36,7 @@ def main() -> None:
             print(model_name)
         return
 
-    agent = Cafl(model=args.model, event_logger=ConsoleEventLogger())
+    agent = Cafl(model=args.model, event_logger=EventLogger(Path(args.output_root) / "events.log"))
     if args.parallel:
         results = asyncio.run(
             agent.run_many_async(

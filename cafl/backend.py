@@ -20,7 +20,8 @@ from collections.abc import AsyncGenerator, Generator, Iterator
 import asyncio
 from pathlib import Path
 from .config import CaflConfig
-from .utils.formatting import message_content, result_record, stringify, write_batch_summary, write_summary
+from .utils.formatting import message_content, result_record, stringify, tool_trace_record, write_batch_summary, write_summary
+from .utils.schema import format_output_schema_instruction, validate_output_text
 from .utils.utils import append_jsonl, get_path_time_signature, get_time_signature, safe_slug
 
 
@@ -50,6 +51,7 @@ class RunState:
     cost: float = 0.0
     n_calls: int = 0
     next_event_index: int = 0
+    output_validation_failures: int = 0
 
 
 @dataclass
@@ -165,6 +167,7 @@ class Cafl(DefaultAgent):
         tasks: list[str],
         *,
         output_root: Path | str | None = "runs",
+        output_dir: Path | str | None = None,
         max_tokens: int | None = None,
         timeout: float | None = None,
         **kwargs,
@@ -173,6 +176,7 @@ class Cafl(DefaultAgent):
             self.run_many_async(
                 tasks,
                 output_root=output_root,
+                output_dir=output_dir,
                 max_tokens=max_tokens,
                 timeout=timeout,
                 **kwargs,
@@ -184,11 +188,18 @@ class Cafl(DefaultAgent):
         tasks: list[str],
         *,
         output_root: Path | str | None = "runs",
+        output_dir: Path | str | None = None,
         max_tokens: int | None = None,
         timeout: float | None = None,
         **kwargs,
     ) -> list[CaflResult]:
-        batch_dir = self._prepare_batch_dir(output_root) if output_root is not None else None
+        if output_dir is not None:
+            batch_dir = Path(output_dir)
+            batch_dir.mkdir(parents=True, exist_ok=True)
+        elif output_root is not None:
+            batch_dir = self._prepare_batch_dir(output_root)
+        else:
+            batch_dir = None
         results = await asyncio.gather(
             *(
                 self.run_async(
@@ -248,6 +259,9 @@ class Cafl(DefaultAgent):
         events.append(event)
         if trace_path is not None:
             append_jsonl(trace_path, asdict(event))
+            tool_record = tool_trace_record(event)
+            if tool_record is not None:
+                append_jsonl(trace_path.parent / "tool_trace.jsonl", tool_record)
         if self.event_logger is not None:
             self.event_logger(event)
 
@@ -259,10 +273,15 @@ class Cafl(DefaultAgent):
         state.extra_template_vars |= {"task": task, **kwargs}
         state.messages.clear()
         state.next_event_index = 0
+        state.output_validation_failures = 0
+
+        system_content = self._render_template_for_state(state, self.config.system_template)
+        if self.cafl_config.output_schema is not None:
+            system_content += "\n\n" + format_output_schema_instruction(self.cafl_config.output_schema)
 
         self._add_messages(
             state,
-            self.model.format_message(role="system", content=self._render_template_for_state(state, self.config.system_template)),
+            self.model.format_message(role="system", content=system_content),
             self.model.format_message(role="user", content=self._render_template_for_state(state, self.config.instance_template)),
         )
         return state
@@ -291,6 +310,11 @@ class Cafl(DefaultAgent):
                     yield self._emit_message_event(state, message, status="failed", error=str(e))
                 raise
             if self._should_stop(state):
+                retry_message = self._output_validation_retry_message(state)
+                if retry_message is not None:
+                    self._add_messages(state, retry_message)
+                    yield self._emit_message_event(state, retry_message, status="failed", error="OutputSchemaValidationError")
+                    continue
                 return state.messages[-1].get("extra", {})
 
     async def stream_async(
@@ -318,6 +342,11 @@ class Cafl(DefaultAgent):
                     yield self._emit_message_event(state, message, status="failed", error=str(e))
                 raise
             if self._should_stop(state):
+                retry_message = self._output_validation_retry_message(state)
+                if retry_message is not None:
+                    self._add_messages(state, retry_message)
+                    yield self._emit_message_event(state, retry_message, status="failed", error="OutputSchemaValidationError")
+                    continue
                 return
 
     def _stream_step(
@@ -411,6 +440,31 @@ class Cafl(DefaultAgent):
         return last_message.get("role") == "exit" or (
             last_message.get("role") == "assistant"
             and not last_message.get("extra", {}).get("actions", [])
+        )
+
+    def _output_validation_retry_message(self, state: RunState) -> dict | None:
+        if self.cafl_config.output_schema is None:
+            return None
+        if state.output_validation_failures >= self.cafl_config.output_validation_retries:
+            return None
+        answer, _message = self._extract_answer(state)
+        _parsed, error = validate_output_text(answer, self.cafl_config.output_schema)
+        if error is None:
+            return None
+        state.output_validation_failures += 1
+        return self.model.format_message(
+            role="user",
+            content=(
+                "Your previous final answer did not match the required JSON output schema.\n"
+                f"Validation error: {error}\n"
+                "Retry now. Return only a JSON object matching the schema, with no markdown fences "
+                "and no extra prose."
+            ),
+            extra={
+                "interrupt_type": "OutputSchemaValidationError",
+                "validation_error": error,
+                "retry": state.output_validation_failures,
+            },
         )
 
     def _query(

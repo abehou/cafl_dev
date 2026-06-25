@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ast
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,26 @@ def result_record(record_type: str, state: Any, content: str, *, message: dict |
         record["role"] = message.get("role")
         record["model"] = message.get("extra", {}).get("model_name")
     return record
+
+
+def tool_trace_record(event: Any) -> dict | None:
+    if event.role != "tool_call":
+        return None
+    try:
+        action = ast.literal_eval(event.content)
+    except (ValueError, SyntaxError):
+        action = {"raw": event.content}
+    if not isinstance(action, dict):
+        action = {"raw": action}
+
+    action = dict(action)
+    tool = action.pop("tool", action.pop("name", "bash"))
+    action.pop("tool_call_id", None)
+    return {
+        "event_index": event.index,
+        "tool": tool,
+        "arguments": action,
+    }
 
 
 def summary_dict(result: Any) -> dict:

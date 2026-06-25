@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Mapping
+from typing import Any, Mapping
 
 DEFAULT_MODEL = "gemini/gemini-3-flash-preview"
 MODEL_ALIASES = MappingProxyType(
@@ -84,6 +84,8 @@ class CaflConfig:
     system_template: str = DEFAULT_SYSTEM_TEMPLATE
     instance_template: str = DEFAULT_INSTANCE_TEMPLATE
     observation_template: str = DEFAULT_OBSERVATION_TEMPLATE
+    output_schema: dict[str, Any] | None = None
+    output_validation_retries: int = 2
 
     def resolve_model_name(self, model_name: str) -> str:
         return self.model_aliases.get(model_name, model_name)
