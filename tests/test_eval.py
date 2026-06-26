@@ -3,15 +3,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from envs.eval import (
+from envs.eval import Evaluator
+from envs.metrics import (
     accuracy_score,
     classification_metrics,
-    evaluate_result,
     f1_score,
     normalize_for_comparison,
     precision_score,
     recall_score,
-    write_evaluation,
 )
 
 
@@ -21,20 +20,38 @@ def test_normalize_for_comparison_is_generic_text_normalization():
     assert normalize_for_comparison(True) is True
 
 
-def test_evaluate_result_extracts_configured_prediction_field():
+def test_evaluator_extracts_configured_prediction_field():
     row = {"idx": 7, "gold": "Rent Control"}
     result = SimpleNamespace(
         question="What law applies?",
         answer='{"label": " rent   CONTROL "}',
         output_dir="/tmp/item-007",
     )
+    evaluator = Evaluator(ground_truth_field="gold", prediction_field="label")
 
-    record = evaluate_result(row, result, ground_truth_field="gold", prediction_field="label")
+    record = evaluator.evaluate(row, result)
 
     assert record["correct"] is True
     assert record["predicted"] == " rent   CONTROL "
     assert record["expected"] == "Rent Control"
     assert record["parsed_answer"] == {"label": " rent   CONTROL "}
+
+
+def test_evaluator_can_override_correctness_logic():
+    class ContainsEvaluator(Evaluator):
+        def is_correct(self, predicted, expected, **kwargs):
+            return expected.casefold() in predicted.casefold()
+
+    row = {"gold": "rent control"}
+    result = SimpleNamespace(
+        question="What law applies?",
+        answer='{"answer": "The answer probably involves rent control protections."}',
+        output_dir=None,
+    )
+
+    record = ContainsEvaluator(ground_truth_field="gold").evaluate(row, result)
+
+    assert record["correct"] is True
 
 
 def test_classification_metric_helpers_handle_multiclass_macro_scores():
@@ -72,7 +89,9 @@ def test_write_evaluation_writes_records_and_summary(tmp_path):
         {"correct": False, "idx": 2, "expected": "yes", "predicted": "no"},
     ]
 
-    write_evaluation(tmp_path, records)
+    evaluator = Evaluator(ground_truth_field="gold")
+
+    evaluator.write(tmp_path, records)
 
     rows = [json.loads(line) for line in (tmp_path / "evaluation.jsonl").read_text().splitlines()]
     summary = json.loads((tmp_path / "evaluation_summary.json").read_text())

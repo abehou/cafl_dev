@@ -55,6 +55,19 @@ EOF
 <system_information>
 {{system}} {{release}} {{version}} {{machine}}
 </system_information>
+
+{% if task_environment_instructions %}
+## Task Environment Instructions
+{{ task_environment_instructions }}
+{% endif %}
+
+{% if corpus_dir %}
+The local corpus directory is: {{ corpus_dir }}
+{% endif %}
+
+{% if bm25_instructions %}
+{{ bm25_instructions }}
+{% endif %}
 """
 DEFAULT_INSTANCE_TEMPLATE = "{{ task }}"
 DEFAULT_OBSERVATION_TEMPLATE = """{% if output.exception_info -%}
@@ -86,6 +99,10 @@ class CaflConfig:
     observation_template: str = DEFAULT_OBSERVATION_TEMPLATE
     output_schema: dict[str, Any] | None = None
     output_validation_retries: int = 2
+    step_limit: int = 30
+    repeated_tool_call_limit: int = 5
+    memory_dir: str | None = None
+    max_memory_chars: int = 12000
 
     def resolve_model_name(self, model_name: str) -> str:
         return self.model_aliases.get(model_name, model_name)

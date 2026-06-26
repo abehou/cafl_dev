@@ -112,6 +112,55 @@ class PlainAnswerModel(FakeModel):
         }
 
 
+class AlwaysToolModel(FakeModel):
+    def query(self, messages):
+        self.calls += 1
+        return {
+            "role": "assistant",
+            "content": "keep searching",
+            "extra": {"actions": [{"cmd": f"echo {self.calls}"}]},
+        }
+
+
+class RepeatToolThenAnswerModel(FakeModel):
+    def query(self, messages):
+        self.calls += 1
+        if messages[-1]["role"] == "user" and "repeated the same tool call" in messages[-1]["content"]:
+            return {
+                "role": "assistant",
+                "content": "final from available evidence",
+                "extra": {"actions": []},
+            }
+        return {
+            "role": "assistant",
+            "content": "repeat search",
+            "extra": {"actions": [{"cmd": "echo same", "tool_call_id": f"call-{self.calls}"}]},
+        }
+
+
+class WorkingMemoryAwareModel(FakeModel):
+    def __init__(self):
+        super().__init__()
+        self.seen_messages = []
+
+    def query(self, messages):
+        self.calls += 1
+        self.seen_messages.append(list(messages))
+        if self.calls == 1:
+            return {
+                "role": "assistant",
+                "content": "inspect",
+                "extra": {"actions": [{"cmd": "echo evidence"}]},
+            }
+        assert "## Working Memory" in messages[-1]["content"]
+        assert "executed echo evidence" in messages[-1]["content"]
+        return {
+            "role": "assistant",
+            "content": "answer from memory",
+            "extra": {"actions": []},
+        }
+
+
 class InvalidThenValidJsonModel(FakeModel):
     def query(self, messages):
         self.calls += 1
@@ -190,6 +239,53 @@ def test_default_system_template_includes_tool_and_submission_protocol():
     assert "remaining output is the final" in system_message
 
 
+def test_default_system_template_renders_environment_retrieval_vars():
+    agent = Cafl(PlainAnswerModel())
+
+    system_message = agent.run(
+        "what is CAFL?",
+        output_root=None,
+        task_environment_instructions="Use local statutes.",
+        corpus_dir="/tmp/corpus",
+        bm25_instructions="## BM25 Corpus Search\npython -m cafl.tools.retrieval search",
+    ).state.messages[0]["content"]
+
+    assert "Use local statutes." in system_message
+    assert "The local corpus directory is: /tmp/corpus" in system_message
+    assert "## BM25 Corpus Search" in system_message
+    assert "python -m cafl.tools.retrieval search" in system_message
+
+
+def test_environment_memory_is_added_to_system_prompt(tmp_path):
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "MEMORY.md").write_text("Use state filters before broad retrieval.", encoding="utf-8")
+    agent = Cafl(
+        PlainAnswerModel(),
+        cafl_config=CaflConfig(memory_dir=str(memory_dir)),
+    )
+
+    system_message = agent.run("what is CAFL?", output_root=None).state.messages[0]["content"]
+
+    assert "## Environment Memory" in system_message
+    assert "Use state filters before broad retrieval." in system_message
+
+
+def test_run_keeps_working_memory_in_state_without_writing_run_memory(tmp_path):
+    memory_dir = tmp_path / "memory"
+    agent = Cafl(
+        FakeModel(),
+        FakeEnv(),
+        cafl_config=CaflConfig(system_template="{{ task }}", memory_dir=str(memory_dir)),
+    )
+
+    result = agent.run("what is CAFL?", output_root=None)
+
+    assert result.state.memory["actions"] == [{"cmd": "echo hi"}]
+    assert result.state.memory["tool_observations"][0]["summary"] == '{"output": "executed echo hi"}'
+    assert not (memory_dir / "run_memory.jsonl").exists()
+
+
 def test_output_schema_is_added_to_system_prompt():
     agent = Cafl(
         PlainAnswerModel(),
@@ -219,6 +315,63 @@ def test_output_schema_invalid_answer_triggers_retry():
     ]
     assert "did not match the required JSON output schema" in result.events[1].content
     assert result.state.output_validation_failures == 1
+
+
+def test_default_step_limit_stops_unbounded_tool_loop():
+    agent = Cafl(
+        AlwaysToolModel(),
+        FakeEnv(),
+        system_template="system",
+        instance_template="task",
+        cafl_config=CaflConfig(step_limit=2, repeated_tool_call_limit=0),
+    )
+
+    result = agent.run("loop", output_root=None)
+
+    assert result.answer == ""
+    assert result.state.n_calls == 2
+    assert result.events[-1].role == "exit"
+    assert result.events[-1].content == "LimitsExceeded"
+
+
+def test_repeated_tool_call_interrupts_with_calibration_message():
+    env = FakeEnv()
+    agent = Cafl(
+        RepeatToolThenAnswerModel(),
+        env,
+        system_template="system",
+        instance_template="task",
+        cafl_config=CaflConfig(repeated_tool_call_limit=3),
+    )
+
+    result = agent.run("loop", output_root=None)
+
+    assert result.answer == "final from available evidence"
+    assert [event.role for event in result.events].count("tool_call") == 2
+    assert any(event.role == "user" and event.status == "failed" for event in result.events)
+    assert "repeated the same tool call" in result.state.messages[-2]["content"]
+    assert "Recalibrate your retrieval strategy" in result.state.messages[-2]["content"]
+    assert result.state.messages[-2]["extra"]["interrupt_type"] == "RepeatedToolCallCalibration"
+    assert "action_counts" in result.state.memory
+
+
+def test_working_memory_is_injected_without_persisting_to_state_messages():
+    model = WorkingMemoryAwareModel()
+    agent = Cafl(
+        model,
+        FakeEnv(),
+        system_template="system",
+        instance_template="task",
+    )
+
+    result = agent.run("use memory", output_root=None)
+
+    assert result.answer == "answer from memory"
+    assert model.calls == 2
+    assert "## Working Memory" in model.seen_messages[1][-1]["content"]
+    assert not any(message.get("extra", {}).get("memory_type") == "working_memory" for message in result.state.messages)
+    assert result.state.memory["actions"] == [{"cmd": "echo evidence"}]
+    assert "executed echo evidence" in result.state.memory["tool_observations"][-1]["summary"]
 
 
 def test_named_model_can_answer_without_tool_call(monkeypatch):
@@ -341,6 +494,89 @@ async def test_run_many_async_preserves_question_order_without_env():
     assert [result.answer for result in results] == ["answer: first", "answer: second", "answer: third"]
 
 
+@pytest.mark.asyncio
+async def test_run_many_async_can_show_progress(monkeypatch):
+    progress_calls = []
+
+    class FakeProgress:
+        def __init__(self, iterable, *, total, desc, unit):
+            progress_calls.append({"total": total, "desc": desc, "unit": unit})
+            self.iterable = iterable
+
+        def __iter__(self):
+            return iter(self.iterable)
+
+    monkeypatch.setattr("tqdm.tqdm", FakeProgress)
+    agent = Cafl(
+        PlainAnswerModel(),
+        system_template="system",
+        instance_template="{{ task }}",
+    )
+
+    results = await agent.run_many_async(
+        ["first", "second"],
+        output_root=None,
+        show_progress=True,
+        progress_desc="Testing agents",
+    )
+
+    assert [result.answer for result in results] == ["answer: first", "answer: second"]
+    assert progress_calls == [{"total": 2, "desc": "Testing agents", "unit": "task"}]
+
+
+@pytest.mark.asyncio
+async def test_run_many_async_limits_max_concurrency(monkeypatch):
+    running = 0
+    max_seen = 0
+    lock = asyncio.Lock()
+    original_run_async = Cafl.run_async
+
+    async def tracked_run_async(self, *args, **kwargs):
+        nonlocal running, max_seen
+        async with lock:
+            running += 1
+            max_seen = max(max_seen, running)
+        await asyncio.sleep(0.01)
+        try:
+            return await original_run_async(self, *args, **kwargs)
+        finally:
+            async with lock:
+                running -= 1
+
+    monkeypatch.setattr(Cafl, "run_async", tracked_run_async)
+    agent = Cafl(
+        PlainAnswerModel(),
+        system_template="system",
+        instance_template="{{ task }}",
+    )
+
+    results = await agent.run_many_async(
+        ["first", "second", "third", "fourth"],
+        output_root=None,
+        max_concurrency=2,
+    )
+
+    assert [result.answer for result in results] == [
+        "answer: first",
+        "answer: second",
+        "answer: third",
+        "answer: fourth",
+    ]
+    assert max_seen <= 2
+
+
+@pytest.mark.asyncio
+async def test_run_many_async_rejects_invalid_max_concurrency():
+    agent = Cafl(
+        PlainAnswerModel(),
+        system_template="system",
+        instance_template="{{ task }}",
+    )
+
+    with pytest.raises(ValueError, match="max_concurrency"):
+        await agent.run_many_async(["first"], output_root=None, max_concurrency=0)
+
+
 def test_run_writes_results_trace_and_summary(tmp_path):
     agent = Cafl(
         PlainAnswerModel(),
@@ -426,6 +662,8 @@ def test_run_agentic_mode_returns_result_and_persists_trace(tmp_path):
         ("exit", "done", "completed"),
     ]
     assert logged_events == result.events
+    assert result.state.events == result.events
+    assert result.state.output_dir == result.output_dir
     assert [event.event_id for event in result.events] == [0, 1, 2, 3]
     trace_records = [json.loads(line) for line in (result.output_dir / "trace.jsonl").read_text().splitlines()]
     assert [record["role"] for record in trace_records] == ["assistant", "tool_call", "tool", "exit"]

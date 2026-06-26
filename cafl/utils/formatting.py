@@ -16,8 +16,20 @@ def stringify(value: Any) -> str:
     return repr(value)
 
 
+def json_preview(value: Any, *, max_chars: int = 500) -> str:
+    if isinstance(value, str):
+        return value[:max_chars]
+    return json.dumps(value, ensure_ascii=False, default=str)[:max_chars]
+
+
 def message_content(message: dict) -> str:
     return stringify(message.get("content", message.get("output_text", message.get("output", ""))))
+
+
+def normalize_action(action: dict) -> dict:
+    normalized = dict(action)
+    normalized.pop("tool_call_id", None)
+    return normalized
 
 
 def result_record(record_type: str, state: Any, content: str, *, message: dict | None = None) -> dict:
@@ -44,9 +56,8 @@ def tool_trace_record(event: Any) -> dict | None:
     if not isinstance(action, dict):
         action = {"raw": action}
 
-    action = dict(action)
+    action = normalize_action(action)
     tool = action.pop("tool", action.pop("name", "bash"))
-    action.pop("tool_call_id", None)
     return {
         "event_index": event.index,
         "tool": tool,

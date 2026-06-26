@@ -9,6 +9,7 @@ dependencies = [
     "jinja2",
     "pandas",
     "huggingface_hub",
+    "tqdm",
 ]
 
 [project.optional-dependencies]

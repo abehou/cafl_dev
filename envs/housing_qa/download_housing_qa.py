@@ -1,18 +1,11 @@
 import json
 import zipfile
 from io import TextIOWrapper
+from pathlib import Path
 
 import pandas as pd
 from huggingface_hub import hf_hub_download
-from pathlib import Path
 from tqdm import trange
-
-ROOT_DIR = Path(__file__).resolve().parent
-DATA_DIR = ROOT_DIR / "data"
-if not DATA_DIR.exists():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -41,19 +34,20 @@ def load_housing_qa(name: str):
             output_path = DATA_DIR / f"{name}.jsonl"
             with output_path.open("w", encoding="utf-8") as out:
                 for row in rows:
-                    json_data = json.dumps(row, ensure_ascii=False)
-                    # Needs to enrich and specify the state in the question for better context, this is new modification not in the original dataset.
+                    # Add state context to the question; this is not in the original dataset.
                     refined_question = f"(For the state of {row.get('state', 'Unknown')}), {row.get('question', '')}"
+                    json_data = dict(row)
                     json_data["question"] = refined_question
-                    out.write(json_data + "\n")
+                    out.write(json.dumps(json_data, ensure_ascii=False) + "\n")
 
             return output_path
-
+        
         if name == "statutes":
             print(f"Loading statutes from {zip_path}")
             with z.open("statutes.tsv") as f:
                 df = pd.read_csv(f, sep="\t")
             output_path = DATA_DIR / "corpus" / "statutes.jsonl"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             with output_path.open("w", encoding="utf-8") as out:
                 for row in trange(len(df), desc="Writing statutes.jsonl"):
                     out.write(json.dumps(df.iloc[row].to_dict(), ensure_ascii=False) + "\n")

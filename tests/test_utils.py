@@ -3,6 +3,16 @@ import json
 import pytest
 
 from cafl.utils.utils import list_gemini_models
+from cafl.utils.formatting import normalize_action
+
+
+def test_normalize_action_removes_tool_call_id_without_mutating_input():
+    action = {"command": "echo hi", "tool_call_id": "call-1"}
+
+    normalized = normalize_action(action)
+
+    assert normalized == {"command": "echo hi"}
+    assert action == {"command": "echo hi", "tool_call_id": "call-1"}
 
 
 def test_list_gemini_models_requires_api_key(monkeypatch):

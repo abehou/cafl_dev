@@ -10,7 +10,7 @@ from .backend import MiniEvent
 
 DEFAULT_MAX_EVENT_CHARS = 500
 
-class EventLogger:
+class EventLogger: # May be overridden for custom logging behavior
     def __init__(self, path: Path | str, *, max_chars: int = DEFAULT_MAX_EVENT_CHARS):
         self.path = Path(path)
         self.max_chars = max_chars

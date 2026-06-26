@@ -3,7 +3,9 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Any
 from urllib.request import urlopen
+
 
 def get_time_signature() -> str:
     """Get a time signature string in the format YYYY/MM/DD_HH:MM:SS."""
@@ -20,12 +22,26 @@ def append_jsonl(path: Path, record: dict) -> None:
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+
+def parse_tool_output_json(output: Any) -> Any:
+    if isinstance(output, dict) and "output" in output:
+        output = output["output"]
+    if not isinstance(output, str):
+        return output
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError:
+        return output
+
+
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
 
 def read_jsonl(path: Path) -> list[dict]:
     with path.open(encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
+
 
 def safe_slug(text: str, *, max_length: int = 64) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", text.lower()).strip("-")
