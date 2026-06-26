@@ -175,6 +175,47 @@ def test_bm25_index_uses_configured_text_fields_and_auto_metadata(tmp_path):
     assert unused_results == []
 
 
+def test_bm25_shard_field_routes_filtered_search_and_preserves_global_doc_ids(tmp_path):
+    corpus_dir = tmp_path / "corpus"
+    write_jsonl(
+        corpus_dir / "docs.jsonl",
+        [
+            {"citation": "MO", "jurisdiction": "missouri", "body": "tenant notice rules"},
+            {"citation": "AK", "jurisdiction": "alaska", "body": "tenant notice rules"},
+        ],
+    )
+    index_path = tmp_path / "bm25.sqlite"
+
+    stats = build_bm25_index(
+        corpus_dir,
+        index_path,
+        config={"text_fields": ["body"], "shard_field": "jurisdiction"},
+    )
+    results = search_bm25(index_path, "tenant notice", filters={"jurisdiction": "alaska"})
+    doc = get_bm25_doc(index_path, results[0]["doc_id"])
+
+    assert stats["n_shards"] == 2
+    assert results[0]["doc_id"] == 1
+    assert results[0]["citation"] == "AK"
+    assert doc["record"]["citation"] == "AK"
+
+
+def test_bm25_tool_instruction_mentions_configured_shard_field(tmp_path):
+    corpus_dir = tmp_path / "corpus"
+    write_jsonl(corpus_dir / "docs.jsonl", [{"citation": "A", "jurisdiction": "missouri", "body": "tenant notice"}])
+    index_path = tmp_path / "bm25.sqlite"
+    build_bm25_index(
+        corpus_dir,
+        index_path,
+        config={"text_fields": ["body"], "shard_field": "jurisdiction"},
+    )
+
+    instruction = bm25_tool_instruction(index_path)
+
+    assert "Shard field: jurisdiction" in instruction
+    assert "--filter jurisdiction=VALUE" in instruction
+
+
 def test_bm25_auto_indexes_record_fields_when_text_fields_are_omitted(tmp_path):
     corpus_dir = tmp_path / "corpus"
     write_jsonl(corpus_dir / "docs.jsonl", [{"citation": "A", "statute_body": "tenant notice rules"}])

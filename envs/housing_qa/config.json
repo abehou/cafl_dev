@@ -1,12 +1,12 @@
 {
     "task_file": "questions.jsonl",
     "corpus_dir": "corpus",
-    "memory_dir": "memory",
     "task_field": "question",
     "ground_truth_field": "answer",
     "bm25": {
         "index_path": "indexes/bm25.sqlite",
-        "text_fields": ["text", "citation", "path", "state"]
+        "text_fields": ["text", "citation", "path", "state"],
+        "shard_field": "state" 
     },
     "agent_additional_system_prompt": "You are a housing specialist who knows all the housing laws and regulations and pay special attention to which state the question is about.",
     "output_schema": {
@@ -19,4 +19,4 @@
             }
         ]
     }
-}
+} 

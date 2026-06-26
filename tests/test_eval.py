@@ -37,6 +37,36 @@ def test_evaluator_extracts_configured_prediction_field():
     assert record["parsed_answer"] == {"label": " rent   CONTROL "}
 
 
+def test_evaluator_treats_common_boolean_label_aliases_as_equivalent():
+    row = {"idx": 7, "gold": "Yes"}
+    result = SimpleNamespace(
+        question="Is it allowed?",
+        answer='{"answer": "True"}',
+        output_dir=None,
+    )
+    evaluator = Evaluator(ground_truth_field="gold")
+
+    record = evaluator.evaluate(row, result)
+
+    assert record["correct"] is True
+    assert record["expected"] == "Yes"
+    assert record["predicted"] == "True"
+
+
+def test_evaluator_can_disable_default_label_aliases():
+    row = {"idx": 7, "gold": "Yes"}
+    result = SimpleNamespace(
+        question="Is it allowed?",
+        answer='{"answer": "True"}',
+        output_dir=None,
+    )
+    evaluator = Evaluator(ground_truth_field="gold", label_aliases={})
+
+    record = evaluator.evaluate(row, result)
+
+    assert record["correct"] is False
+
+
 def test_evaluator_can_override_correctness_logic():
     class ContainsEvaluator(Evaluator):
         def is_correct(self, predicted, expected, **kwargs):
@@ -103,3 +133,19 @@ def test_write_evaluation_writes_records_and_summary(tmp_path):
     assert summary["precision"] == pytest.approx(0.5)
     assert summary["recall"] == pytest.approx(0.25)
     assert summary["f1"] == pytest.approx(1 / 3)
+
+
+def test_write_evaluation_summary_uses_label_aliases(tmp_path):
+    records = [
+        {"correct": True, "idx": 1, "expected": "Yes", "predicted": "True"},
+        {"correct": True, "idx": 2, "expected": "No", "predicted": "False"},
+    ]
+
+    evaluator = Evaluator(ground_truth_field="gold")
+
+    evaluator.write(tmp_path, records)
+
+    summary = json.loads((tmp_path / "evaluation_summary.json").read_text())
+
+    assert summary["n_correct"] == 2
+    assert summary["accuracy"] == 1.0

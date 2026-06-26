@@ -95,6 +95,7 @@ def main() -> None:
     evaluator = Evaluator(
         ground_truth_field=config["ground_truth_field"],
         prediction_field=config.get("prediction_field", "answer"),
+        label_aliases=config.get("label_aliases"),
     )
     evaluation = [evaluator.evaluate(row, result) for row, result in zip(rows, results)]
     evaluator.write(run_dir, evaluation)

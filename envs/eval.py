@@ -12,11 +12,35 @@ from cafl.utils.schema import extract_json_object
 from cafl.utils.utils import append_jsonl
 from envs.metrics import classification_metrics, normalize_for_comparison
 
+DEFAULT_LABEL_ALIASES = {
+    "yes": True,
+    "y": True,
+    "true": True,
+    "t": True,
+    "1": True,
+    "no": False,
+    "n": False,
+    "false": False,
+    "f": False,
+    "0": False,
+}
+
 
 class Evaluator:
-    def __init__(self, *, ground_truth_field: str, prediction_field: str = "answer"):
+    def __init__(
+        self,
+        *,
+        ground_truth_field: str,
+        prediction_field: str = "answer",
+        label_aliases: dict[str, Any] | None = None,
+    ):
         self.ground_truth_field = ground_truth_field
         self.prediction_field = prediction_field
+        aliases = DEFAULT_LABEL_ALIASES if label_aliases is None else label_aliases
+        self.label_aliases = {
+            normalize_for_comparison(key): value
+            for key, value in aliases.items()
+        }
 
     def evaluate(self, row: dict, result) -> dict:
         parsed = extract_json_object(result.answer)
@@ -42,7 +66,11 @@ class Evaluator:
         return None
 
     def is_correct(self, predicted: Any, expected: Any, **kwargs) -> bool:
-        return normalize_for_comparison(predicted) == normalize_for_comparison(expected)
+        return self.normalize_label(predicted) == self.normalize_label(expected)
+
+    def normalize_label(self, value: Any) -> Any:
+        normalized = normalize_for_comparison(value)
+        return self.label_aliases.get(normalized, normalized)
 
     def summarize(self, records: list[dict]) -> dict:
         n = len(records)
@@ -55,8 +83,8 @@ class Evaluator:
         if records and all("expected" in record and "predicted" in record for record in records):
             summary.update(
                 classification_metrics(
-                    [record["expected"] for record in records],
-                    [record["predicted"] for record in records],
+                    [self.normalize_label(record["expected"]) for record in records],
+                    [self.normalize_label(record["predicted"]) for record in records],
                 )
             )
             summary["n_correct"] = n_correct

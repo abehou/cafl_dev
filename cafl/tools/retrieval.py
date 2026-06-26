@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import re
+import shutil
 import sqlite3
+from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -16,10 +19,11 @@ from tqdm import tqdm
 from cafl.memory import register_tool_summarizer
 from cafl.utils.formatting import json_preview
 from cafl.utils.shell import shell_arg, shell_args, split_shell_command
-from cafl.utils.utils import parse_tool_output_json
+from cafl.utils.utils import parse_tool_output_json, safe_slug
 
 INDEX_CONFIG_KEY = "index_config"
 INDEX_COMPACT_FIELDS_KEY = "compact_fields"
+INDEX_SHARDS_KEY = "shards"
 MAX_COMPACT_FIELD_CHARS = 240
 DEFAULT_MAX_SEARCH_LIMIT = 20
 QUERY_TERM_LIMIT = 24
@@ -44,6 +48,7 @@ QUERY_STOPWORDS = {
     "why",
 }
 SUMMARY_TOP_RESULTS = 3
+MAX_OPEN_SHARD_CONNECTIONS = 32
 
 
 def corpus_files(corpus_path: Path | str) -> list[Path]:
@@ -68,46 +73,23 @@ def build_bm25_index(
         text_fields=text_fields,
     )
     if index_path.exists() and not rebuild and index_matches_config(index_path, index_config):
-        return {"index_path": str(index_path), "n_documents": count_documents(index_path), "rebuilt": False}
+        return {
+            "index_path": str(index_path),
+            "n_documents": count_documents(index_path),
+            "n_shards": len(read_index_shards(index_path)),
+            "rebuilt": False,
+        }
 
     index_path.parent.mkdir(parents=True, exist_ok=True)
     if index_path.exists():
         index_path.unlink()
+    shard_root = shard_root_path(index_path)
+    if shard_root.exists():
+        shutil.rmtree(shard_root)
 
     files = corpus_files(corpus_path)
     with sqlite3.connect(index_path) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        conn.execute(
-            """
-            CREATE TABLE documents (
-                doc_id INTEGER PRIMARY KEY,
-                source TEXT NOT NULL,
-                line_no INTEGER NOT NULL,
-                record_json TEXT NOT NULL,
-                metadata_json TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE document_metadata (
-                doc_id INTEGER NOT NULL,
-                key TEXT NOT NULL,
-                value TEXT NOT NULL,
-                PRIMARY KEY (doc_id, key)
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE VIRTUAL TABLE documents_fts USING fts5(
-                doc_id UNINDEXED,
-                text,
-                tokenize='unicode61'
-            )
-            """
-        )
+        initialize_index_schema(conn)
         conn.execute(
             "INSERT INTO index_meta (key, value) VALUES (?, ?)",
             (INDEX_CONFIG_KEY, json.dumps(index_config, sort_keys=True)),
@@ -115,6 +97,10 @@ def build_bm25_index(
 
         n_documents = 0
         compact_fields = set()
+        shard_field = index_config.get("shard_field")
+        shard_conns: OrderedDict[str, sqlite3.Connection] = OrderedDict()
+        shard_paths: dict[str, str] = {}
+        shard_counts: dict[str, int] = {}
         for file_path in tqdm(files, desc="Indexing corpus files", unit="file"):
             source = str(file_path.relative_to(corpus_path) if corpus_path.is_dir() else file_path.name)
             records = tqdm(
@@ -129,33 +115,132 @@ def build_bm25_index(
                 text = record_text(record, tuple(index_config["text_fields"]))
                 metadata = compact_record_metadata(record)
                 compact_fields.update(metadata)
-                conn.execute(
-                    """
-                    INSERT INTO documents (doc_id, source, line_no, record_json, metadata_json)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        doc_id,
-                        source,
-                        line_no,
-                        json.dumps(record, ensure_ascii=False),
-                        json.dumps(metadata, ensure_ascii=False),
-                    ),
-                )
-                conn.execute("INSERT INTO documents_fts (doc_id, text) VALUES (?, ?)", (doc_id, text))
-                conn.executemany(
-                    "INSERT INTO document_metadata (doc_id, key, value) VALUES (?, ?, ?)",
-                    [(doc_id, key, value) for key, value in metadata.items() if value is not None],
-                )
-        conn.execute("CREATE INDEX idx_document_metadata_key_value ON document_metadata(key, value)")
+                insert_index_record(conn, doc_id, source, line_no, record, metadata, text)
+                if shard_field and shard_field in metadata:
+                    shard_value = metadata[shard_field]
+                    if shard_value in shard_conns:
+                        shard_conn = shard_conns.pop(shard_value)
+                        shard_conns[shard_value] = shard_conn
+                    else:
+                        shard_path = shard_index_path(index_path, shard_field, shard_value)
+                        is_new_shard = shard_value not in shard_paths
+                        if is_new_shard:
+                            shard_path.parent.mkdir(parents=True, exist_ok=True)
+                        shard_conn = sqlite3.connect(shard_path)
+                        if is_new_shard:
+                            initialize_index_schema(shard_conn)
+                            shard_conn.execute(
+                                "INSERT INTO index_meta (key, value) VALUES (?, ?)",
+                                (INDEX_CONFIG_KEY, json.dumps(index_config, sort_keys=True)),
+                            )
+                            shard_paths[shard_value] = str(shard_path)
+                            shard_counts[shard_value] = 0
+                        shard_conns[shard_value] = shard_conn
+                        if len(shard_conns) > MAX_OPEN_SHARD_CONNECTIONS:
+                            _old_value, old_conn = shard_conns.popitem(last=False)
+                            old_conn.commit()
+                            old_conn.close()
+                    insert_index_record(shard_conn, doc_id, source, line_no, record, metadata, text)
+                    shard_counts[shard_value] += 1
+        finalize_index(conn, compact_fields)
+        for shard_conn in shard_conns.values():
+            shard_conn.commit()
+            shard_conn.close()
+        for shard_path in shard_paths.values():
+            with sqlite3.connect(shard_path) as shard_conn:
+                finalize_index(shard_conn, compact_fields)
         conn.execute(
             "INSERT INTO index_meta (key, value) VALUES (?, ?)",
-            (INDEX_COMPACT_FIELDS_KEY, json.dumps(sorted(compact_fields), ensure_ascii=False)),
+            (
+                INDEX_SHARDS_KEY,
+                json.dumps(
+                    {
+                        "field": shard_field,
+                        "paths": shard_paths,
+                        "counts": shard_counts,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            ),
         )
         conn.commit()
 
     clear_index_metadata_cache()
-    return {"index_path": str(index_path), "n_documents": n_documents, "rebuilt": True}
+    return {"index_path": str(index_path), "n_documents": n_documents, "n_shards": len(shard_paths), "rebuilt": True}
+
+
+def initialize_index_schema(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute(
+        """
+        CREATE TABLE documents (
+            doc_id INTEGER PRIMARY KEY,
+            source TEXT NOT NULL,
+            line_no INTEGER NOT NULL,
+            record_json TEXT NOT NULL,
+            metadata_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE document_metadata (
+            doc_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (doc_id, key)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE VIRTUAL TABLE documents_fts USING fts5(
+            doc_id UNINDEXED,
+            text,
+            tokenize='unicode61'
+        )
+        """
+    )
+
+
+def insert_index_record(
+    conn: sqlite3.Connection,
+    doc_id: int,
+    source: str,
+    line_no: int,
+    record: dict,
+    metadata: dict[str, str],
+    text: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO documents (doc_id, source, line_no, record_json, metadata_json)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            doc_id,
+            source,
+            line_no,
+            json.dumps(record, ensure_ascii=False),
+            json.dumps(metadata, ensure_ascii=False),
+        ),
+    )
+    conn.execute("INSERT INTO documents_fts (doc_id, text) VALUES (?, ?)", (doc_id, text))
+    conn.executemany(
+        "INSERT INTO document_metadata (doc_id, key, value) VALUES (?, ?, ?)",
+        [(doc_id, key, value) for key, value in metadata.items() if value is not None],
+    )
+
+
+def finalize_index(conn: sqlite3.Connection, compact_fields: set[str]) -> None:
+    conn.execute("CREATE INDEX idx_document_metadata_key_value ON document_metadata(key, value)")
+    conn.execute(
+        "INSERT INTO index_meta (key, value) VALUES (?, ?)",
+        (INDEX_COMPACT_FIELDS_KEY, json.dumps(sorted(compact_fields), ensure_ascii=False)),
+    )
+    conn.commit()
 
 
 def prepare_bm25_index(
@@ -182,7 +267,8 @@ def prepare_bm25_index(
         rebuild=rebuild,
     )
     action = "Built" if stats["rebuilt"] else "Using existing"
-    print(f"{action} BM25 index: {stats['index_path']} ({stats['n_documents']} documents)")
+    shard_text = f", {stats.get('n_shards', 0)} shard(s)" if stats.get("n_shards") else ""
+    print(f"{action} BM25 index: {stats['index_path']} ({stats['n_documents']} documents{shard_text})")
     return index_path
 
 
@@ -195,6 +281,7 @@ def search_bm25(
     include_record: bool = False,
 ) -> list[dict]:
     index_path = Path(index_path)
+    index_path, filters = routed_search_index(index_path, filters or {})
     match_query = make_fts_query(query)
     if not match_query:
         return []
@@ -284,6 +371,7 @@ def normalize_index_config(
         config = dict(config.get("bm25") or {})
     return {
         "text_fields": list(text_fields if text_fields is not None else config.get("text_fields") or []),
+        "shard_field": config.get("shard_field"),
     }
 
 
@@ -317,15 +405,59 @@ def _read_compact_fields_cached(index_path: str) -> tuple[str, ...]:
     return ()
 
 
+def read_index_shards(index_path: Path | str) -> dict:
+    return dict(_read_index_shards_cached(str(Path(index_path))))
+
+
+@lru_cache(maxsize=128)
+def _read_index_shards_cached(index_path: str) -> dict:
+    with sqlite3.connect(index_path) as conn:
+        row = conn.execute(
+            "SELECT value FROM index_meta WHERE key = ?",
+            (INDEX_SHARDS_KEY,),
+        ).fetchone()
+    return json.loads(row[0]) if row is not None else {}
+
+
 def clear_index_metadata_cache() -> None:
     _read_index_config_cached.cache_clear()
     _read_compact_fields_cached.cache_clear()
+    _read_index_shards_cached.cache_clear()
 
 
 def index_matches_config(index_path: Path | str, index_config: dict) -> bool:
     with contextlib.suppress(Exception):
-        return read_index_config(index_path) == index_config
+        if read_index_config(index_path) != index_config:
+            return False
+        shards = read_index_shards(index_path)
+        return all(Path(path).exists() for path in shards.get("paths", {}).values())
     return False
+
+
+def shard_root_path(index_path: Path | str) -> Path:
+    index_path = Path(index_path)
+    return index_path.with_suffix(index_path.suffix + ".shards")
+
+
+def shard_index_path(index_path: Path | str, field: str, value: str) -> Path:
+    digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:10]
+    slug = safe_slug(value, max_length=48)
+    return shard_root_path(index_path) / field / f"{slug}-{digest}.sqlite"
+
+
+def routed_search_index(index_path: Path, filters: dict[str, str]) -> tuple[Path, dict[str, str]]:
+    shards = read_index_shards(index_path)
+    shard_field = shards.get("field")
+    if not shard_field or shard_field not in filters:
+        return index_path, filters
+
+    shard_path = shards.get("paths", {}).get(filters[shard_field])
+    if not shard_path or not Path(shard_path).exists():
+        return index_path, filters
+
+    remaining_filters = dict(filters)
+    remaining_filters.pop(shard_field, None)
+    return Path(shard_path), remaining_filters
 
 
 def iter_jsonl_records(path: Path):
@@ -424,11 +556,19 @@ def bm25_tool_instruction(index_path: Path | str) -> str:
     with contextlib.suppress(Exception):
         config = read_index_config(index_path)
         compact_fields = read_compact_fields(index_path)
+        shards = read_index_shards(index_path)
         text_fields = ", ".join(config["text_fields"]) if config["text_fields"] else "auto-detected from corpus records"
+        shard_text = ""
+        if shards.get("field"):
+            shard_text = (
+                f"Shard field: {shards['field']} ({len(shards.get('paths', {}))} shard indexes). "
+                f"Use --filter {shards['field']}=VALUE whenever the task specifies that jurisdiction/category.\n"
+            )
         config_text = (
             "\n"
             f"Searchable text fields: {text_fields}\n"
             f"Available compact fields: {', '.join(compact_fields)}\n"
+            f"{shard_text}"
         )
     return f"""
 
@@ -441,6 +581,8 @@ python -m cafl.tools.retrieval search --index {index_path} --query "your search 
 
 You may add metadata filters when useful, for example:
 python -m cafl.tools.retrieval search --index {index_path} --query "notice to quit tenant" --filter state=missouri --limit 5
+
+If a jurisdiction-like shard field is listed above, always include that filter when the task gives the value.
 
 If a result looks relevant, inspect the full record by doc_id:
 python -m cafl.tools.retrieval get-doc --index {index_path} --doc-id DOC_ID

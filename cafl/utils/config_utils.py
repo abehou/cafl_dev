@@ -56,6 +56,17 @@ def validate_env_config(config: dict[str, Any], data_dir: Path) -> None:
     if "output_schema" in config and not isinstance(config["output_schema"], dict):
         errors.append("Config field output_schema must be a JSON object.")
 
+    shard_field = (config.get("bm25") or {}).get("shard_field")
+    if shard_field and corpus_dir is not None and corpus_dir.exists():
+        corpus_sample = first_corpus_record(corpus_dir)
+        if corpus_sample is None:
+            errors.append(f"Configured corpus_dir has no JSONL records: {corpus_dir}")
+        elif shard_field not in corpus_sample:
+            errors.append(
+                f"Configured bm25.shard_field {shard_field!r} is not present in the first corpus record. "
+                "Use a jurisdiction/category field such as state, jurisdiction, city, or court when available."
+            )
+
     if task_file is not None and task_file.exists() and {"task_field", "ground_truth_field"} <= set(config):
         sample = first_jsonl_record(task_file)
         if sample is None:
@@ -82,6 +93,14 @@ def first_jsonl_record(path: Path) -> dict | None:
         for line in handle:
             if line.strip():
                 return json.loads(line)
+    return None
+
+
+def first_corpus_record(corpus_dir: Path) -> dict | None:
+    for path in sorted(corpus_dir.rglob("*.jsonl")):
+        record = first_jsonl_record(path)
+        if record is not None:
+            return record
     return None
 
 

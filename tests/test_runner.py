@@ -120,6 +120,36 @@ def test_validate_config_accepts_valid_config(tmp_path):
     assert config_utils.validate_env_config(config, data_dir) is None
 
 
+def test_validate_config_checks_bm25_shard_field_against_corpus(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "questions.jsonl").write_text(
+        '{"question": "Q?", "answer": "True"}\n',
+        encoding="utf-8",
+    )
+    corpus_dir = data_dir / "corpus"
+    corpus_dir.mkdir()
+    (corpus_dir / "docs.jsonl").write_text(
+        '{"jurisdiction": "missouri", "text": "tenant notice"}\n',
+        encoding="utf-8",
+    )
+    config = {
+        "task_file": "questions.jsonl",
+        "corpus_dir": "corpus",
+        "task_field": "question",
+        "ground_truth_field": "answer",
+        "output_schema": {"answer": "a string"},
+        "bm25": {"shard_field": "state"},
+    }
+
+    try:
+        config_utils.validate_env_config(config, data_dir)
+    except ValueError as error:
+        assert "bm25.shard_field 'state'" in str(error)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
 def test_prepare_bm25_index_builds_configured_corpus(tmp_path):
     data_dir = tmp_path / "data"
     corpus_dir = data_dir / "corpus"
