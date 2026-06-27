@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from envs import runner
+import runner
+from cafl.eval.evaluator import Evaluator
 from cafl.tools import retrieval
 from cafl.utils import config_utils
 
@@ -36,6 +37,33 @@ def test_prepare_run_dir_defaults_to_data_runs(tmp_path):
 
     assert run_dir.parent == data_dir / "runs"
     assert run_dir.name.endswith("-housing-qa-batch")
+
+
+def test_load_evaluator_class_defaults_to_generic_evaluator(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+
+    assert runner.load_evaluator_class(config_path) is Evaluator
+
+
+def test_load_evaluator_class_uses_environment_specific_subclass(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    (tmp_path / "eval.py").write_text(
+        "\n".join(
+            [
+                "from cafl.eval.evaluator import Evaluator",
+                "class CustomEvaluator(Evaluator):",
+                "    pass",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    evaluator_class = runner.load_evaluator_class(config_path)
+
+    assert evaluator_class.__name__ == "CustomEvaluator"
+    assert issubclass(evaluator_class, Evaluator)
 
 
 def test_resolve_memory_dir_defaults_to_env_memory(tmp_path):

@@ -14,6 +14,13 @@ A typical workflow might be:
 ```
 We repeat building this workflow for different legal datasets, because each dataset is very heterogeneous. While the datasets may focus on different jurisdictions, statutes, or legal systems, the workflow might be similar variations of the abovementioned one.
 
+Example: suppose we have `housing_qa`, a Question & Answering dataset about housing laws from different states. We 
+
+Instead, CAFL builds:
+```
+- We show the legal dataset of multiple tasks to 
+```
+
 
 
 

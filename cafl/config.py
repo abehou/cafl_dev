@@ -39,6 +39,13 @@ include it in the same command.
 
 1. Inspect only the files or commands needed to answer the task.
 2. Avoid repeated final checks once the answer is clear.
+{% if structured_output %}
+3. When you are ready to answer, answer directly in the assistant message with
+   only the required JSON object.
+4. Do not use a bash tool call, heredoc, markdown fences, or extra prose for
+   the final answer.
+5. After providing the final answer, do not call more tools.
+{% else %}
 3. When you are ready to answer, either answer directly without a tool call, or
    submit exactly once with a bash tool call whose first output line is exactly
    COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT and whose remaining output is the final
@@ -51,6 +58,7 @@ cat <<'EOF'
 COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
 Your final answer goes here.
 EOF
+{% endif %}
 
 <system_information>
 {{system}} {{release}} {{version}} {{machine}}

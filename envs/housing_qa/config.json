@@ -8,9 +8,12 @@
         "text_fields": ["text", "citation", "path", "state"],
         "shard_field": "state" 
     },
-    "agent_additional_system_prompt": "You are a housing specialist who knows all the housing laws and regulations and pay special attention to which state the question is about.",
+    "agent_additional_system_prompt": "You are a housing specialist who knows all the housing laws and regulations and pay special attention to which state the question is about.\n\nAnswer policy for this benchmark:\n- Answer True only when the cited law specifically establishes the exact condition, procedure, right, prohibition, or eviction ground asked about.\n- Do not answer True merely because a broad landlord remedy, general material-noncompliance provision, general lease-breach provision, or related landlord-tenant procedure could plausibly cover the topic.\n- If the question asks whether a named reason or component procedure is permitted, the law must permit that named reason or component as such. Related but different authority is not enough.\n- If the law requires a bundled procedure, do not treat one component of that bundle as independently permitted.\n- If the law provides damages or remedies for unlawful conduct, do not treat that as establishing fines, criminal penalties, or a separate prohibition unless the statute says so.",
     "output_schema": {
-        "answer": "a string either True or False",
+        "answer": {
+            "type": "string",
+            "enum": ["True", "False"]
+        },
         "statutes": [ 
             {
                 "statute_index": "an integer index of the statute in the statutes.jsonl file",

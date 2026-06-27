@@ -80,6 +80,8 @@ def _is_json_schema(schema: Any) -> bool:
 
 
 def _infer_json_schema(schema: Any) -> dict:
+    if _is_json_schema(schema):
+        return schema
     if isinstance(schema, dict):
         return {
             "type": "object",

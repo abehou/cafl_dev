@@ -234,6 +234,7 @@ dependencies = [
     { name = "mini-swe-agent" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
@@ -249,6 +250,7 @@ requires-dist = [
     { name = "mini-swe-agent" },
     { name = "pandas" },
     { name = "pytest", marker = "extra == 'dev'" },
+    { name = "tqdm" },
 ]
 provides-extras = ["dev"]
 

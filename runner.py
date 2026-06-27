@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import sys
 from argparse import ArgumentParser
 from pathlib import Path
 
-ENVS_ROOT = Path(__file__).resolve().parent
-PROJECT_ROOT = ENVS_ROOT.parent
+PROJECT_ROOT = Path(__file__).resolve().parent
+ENVS_ROOT = PROJECT_ROOT / "envs"
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from cafl import Cafl
@@ -24,7 +25,30 @@ from cafl.utils.config_utils import (
     validate_env_config,
 )
 from cafl.utils.utils import get_path_time_signature, read_json, read_jsonl, safe_slug
-from envs.eval import Evaluator
+from cafl.eval.evaluator import Evaluator
+
+
+def load_evaluator_class(config_path: str | Path) -> type[Evaluator]:
+    eval_path = Path(config_path).resolve().parent / "eval.py"
+    if not eval_path.exists():
+        return Evaluator
+
+    module_name = f"cafl_env_eval_{safe_slug(str(eval_path.resolve()))}"
+    spec = importlib.util.spec_from_file_location(module_name, eval_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load evaluator module from {eval_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+
+    evaluator_classes = [
+        value for value in module.__dict__.values()
+        if isinstance(value, type)
+        and issubclass(value, Evaluator)
+        and value is not Evaluator
+    ]
+    return evaluator_classes[0] if evaluator_classes else Evaluator
 
 
 def prepare_run_dir(output_root: str | Path | None, env: str, *, data_dir: Path) -> Path:
@@ -42,7 +66,7 @@ def main() -> None:
     parser.add_argument("--shuffle", action="store_true", help="Shuffle task items with a controlled seed.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--model", default=None)
-    parser.add_argument("--max-tokens", type=int, default=1024)
+    parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--max-concurrency", type=int, default=None)
     parser.add_argument("--output-root", default=None, help="Run output root. Defaults to the environment data/runs folder.")
@@ -91,13 +115,16 @@ def main() -> None:
         )
     )
 
-    # Can be modified to use a custom evaluator class for structured outputs or multi-step reasoning tasks.
-    evaluator = Evaluator(
+    evaluator_class = load_evaluator_class(config_path)
+    evaluator = evaluator_class(
         ground_truth_field=config["ground_truth_field"],
         prediction_field=config.get("prediction_field", "answer"),
         label_aliases=config.get("label_aliases"),
     )
-    evaluation = [evaluator.evaluate(row, result) for row, result in zip(rows, results)]
+    evaluation = [
+        evaluator.evaluate(row, result)
+        for row, result in zip(rows, results)
+    ]
     evaluator.write(run_dir, evaluation)
     print(f"Saved run to {run_dir}")
 

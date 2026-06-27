@@ -10,7 +10,7 @@ from typing import Any
 
 from cafl.utils.schema import extract_json_object
 from cafl.utils.utils import append_jsonl
-from envs.metrics import classification_metrics, normalize_for_comparison
+from cafl.eval.metrics import classification_metrics, normalize_for_comparison
 
 DEFAULT_LABEL_ALIASES = {
     "yes": True,

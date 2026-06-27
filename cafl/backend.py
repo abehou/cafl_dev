@@ -95,11 +95,10 @@ class Cafl(DefaultAgent):
 
     @staticmethod
     def _make_model(model_name: str, cafl_config: CaflConfig) -> ToolLitellmModel:
+        resolved_model_name = cafl_config.resolve_model_name(model_name)
         return ToolLitellmModel(
-            model_name=cafl_config.resolve_model_name(model_name),
-            model_kwargs={
-                "temperature": 0,
-            },
+            model_name=resolved_model_name,
+            model_kwargs=_default_model_kwargs(resolved_model_name),
             observation_template=cafl_config.observation_template,
             cost_tracking="ignore_errors",
         )
@@ -326,7 +325,11 @@ class Cafl(DefaultAgent):
         run_id = f"run-{timestamp}"
         task_id = f"task-{timestamp}" if task == "" else f"task-{task}-{timestamp}"
         state = state or RunState(run_id=run_id, task_id=task_id)
-        state.extra_template_vars |= {"task": task, **kwargs}
+        state.extra_template_vars |= {
+            "task": task,
+            **kwargs,
+            "structured_output": self.cafl_config.output_schema is not None,
+        }
         state.messages.clear()
         state.events.clear()
         state.next_event_index = 0
@@ -594,6 +597,7 @@ class Cafl(DefaultAgent):
                 "task_environment_instructions": "",
                 "corpus_dir": "",
                 "bm25_instructions": "",
+                "structured_output": False,
             },
             state.extra_template_vars,
             kwargs,
@@ -601,3 +605,13 @@ class Cafl(DefaultAgent):
 
     def _render_template_for_state(self, state: RunState, template: str) -> str:
         return Template(template, undefined=StrictUndefined).render(**self._get_template_vars(state))
+
+
+def _default_model_kwargs(model_name: str) -> dict:
+    if _is_gemini_3_model(model_name):
+        return {}
+    return {"temperature": 0}
+
+
+def _is_gemini_3_model(model_name: str) -> bool:
+    return "gemini-3" in model_name.lower()

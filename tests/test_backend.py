@@ -296,6 +296,8 @@ def test_output_schema_is_added_to_system_prompt():
 
     assert "## Output Schema" in system_message
     assert '"answer": "a string"' in system_message
+    assert "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" not in system_message
+    assert "Do not use a bash tool call, heredoc" in system_message
 
 
 def test_output_schema_invalid_answer_triggers_retry():
@@ -387,6 +389,7 @@ def test_named_model_can_answer_without_tool_call(monkeypatch):
     result = agent.run("what is CAFL?", output_root=None, max_tokens=32, timeout=5)
 
     assert result.answer == "direct answer"
+    assert "temperature" not in calls
     assert calls["tools"][0]["function"]["name"] == "bash"
     assert [(event.role, event.content) for event in result.events] == [("assistant", "direct answer")]
     assert not any(message.get("extra", {}).get("interrupt_type") == "FormatError" for message in result.state.messages)
@@ -406,10 +409,28 @@ def test_run_accepts_gemini_model_name(monkeypatch):
 
     assert result.answer == ""
     assert calls["model"] == "gemini/gemini-3-flash-preview"
+    assert "temperature" not in calls
     assert calls["max_tokens"] == 32
     assert calls["timeout"] == 5
     assert calls["tools"][0]["function"]["name"] == "bash"
     assert result.events[1].role == "tool_call"
+
+
+def test_named_non_gemini_3_model_keeps_temperature(monkeypatch):
+    calls = {}
+
+    def fake_completion(**kwargs):
+        calls.update(kwargs)
+        return FakeLiteLLMResponse("direct answer", None)
+
+    monkeypatch.setattr("minisweagent.models.litellm_model.litellm.completion", fake_completion)
+    agent = Cafl(model="provider/fast")
+
+    result = agent.run("what is CAFL?", output_root=None)
+
+    assert result.answer == "direct answer"
+    assert calls["model"] == "provider/fast"
+    assert calls["temperature"] == 0
 
 
 def test_named_model_truncates_large_tool_output(monkeypatch):

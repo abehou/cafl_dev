@@ -3,14 +3,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from envs.eval import Evaluator
-from envs.metrics import (
+from cafl.eval.evaluator import Evaluator
+from cafl.eval.metrics import (
     accuracy_score,
+    aggregate_precision_recall_f1,
     classification_metrics,
     f1_score,
+    mean_score,
     normalize_for_comparison,
     precision_score,
+    precision_recall_f1,
     recall_score,
+    text_token_overlap,
 )
 
 
@@ -111,6 +115,67 @@ def test_classification_metrics_can_report_binary_positive_label_scores():
 def test_classification_metrics_reject_mismatched_lengths():
     with pytest.raises(ValueError, match="same length"):
         classification_metrics(["a"], ["a", "b"])
+
+
+def test_precision_recall_f1_handles_count_metrics():
+    metrics = precision_recall_f1(matched=2, predicted=4, expected=3)
+
+    assert metrics["precision"] == 0.5
+    assert metrics["recall"] == pytest.approx(2 / 3)
+    assert metrics["f1"] == pytest.approx(4 / 7)
+    assert precision_recall_f1(matched=0, predicted=0, expected=3) == {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+    }
+
+
+def test_text_token_overlap_scores_word_set_overlap():
+    metrics = text_token_overlap(
+        "Landlord may deliver written notice to terminate.",
+        "The landlord may deliver notice before termination.",
+    )
+
+    assert metrics["precision"] == pytest.approx(4 / 7)
+    assert metrics["recall"] == pytest.approx(4 / 7)
+    assert metrics["f1"] == pytest.approx(4 / 7)
+    assert text_token_overlap("", "notice")["f1"] == 0.0
+
+
+def test_mean_score_handles_empty_inputs():
+    assert mean_score([1.0, 2.0, 3.0]) == 2.0
+    assert mean_score([]) == 0.0
+
+
+def test_aggregate_precision_recall_f1_reports_mean_and_overall_metrics():
+    metrics = [
+        {
+            "gold_count": 1,
+            "predicted_count": 1,
+            "matched_count": 1,
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+        },
+        {
+            "gold_count": 2,
+            "predicted_count": 1,
+            "matched_count": 0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+        },
+    ]
+
+    summary = aggregate_precision_recall_f1(
+        metrics,
+        expected_count_field="gold_count",
+        prefix="evidence",
+    )
+
+    assert summary["evidence_mean_f1"] == 0.5
+    assert summary["evidence_overall_precision"] == 0.5
+    assert summary["evidence_overall_recall"] == pytest.approx(1 / 3)
 
 
 def test_write_evaluation_writes_records_and_summary(tmp_path):

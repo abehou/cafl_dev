@@ -8,5 +8,6 @@ Requires-Dist: datasets
 Requires-Dist: jinja2
 Requires-Dist: pandas
 Requires-Dist: huggingface_hub
+Requires-Dist: tqdm
 Provides-Extra: dev
 Requires-Dist: pytest; extra == "dev"

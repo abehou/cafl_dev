@@ -3,6 +3,7 @@ datasets
 jinja2
 pandas
 huggingface_hub
+tqdm
 
 [dev]
 pytest
